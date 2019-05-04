@@ -1,0 +1,19 @@
+function [R, t, K, depthStart, depthInterval] = load_cam(file_path)
+fileId = fopen(file_path, 'r');
+line = fgetl(fileId); % Extrinsics
+E = sscanf(fgetl(fileId), '%f')';
+E = [E; sscanf(fgetl(fileId), '%f')'];
+E = [E; sscanf(fgetl(fileId), '%f')'];
+E = [E; sscanf(fgetl(fileId), '%f')'];
+line = fgetl(fileId); % new line
+line = fgetl(fileId); % Intrinsics
+K = sscanf(fgetl(fileId), '%f')';
+K = [K; sscanf(fgetl(fileId), '%f')'];
+K = [K; sscanf(fgetl(fileId), '%f')'];
+line = fgetl(fileId); % new line
+d = sscanf(fgetl(fileId), '%f')';
+depthStart = d(1);
+depthInterval = d(2);
+R = E(1:3, 1:3);
+t = E(1:3, 4);
+end

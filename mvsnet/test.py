@@ -21,9 +21,10 @@ sys.path.append("../")
 from tools.common import Notify
 from preprocess import *
 from model import *
+import pdb
 
 # params for datasets
-tf.app.flags.DEFINE_string('dense_folder', None, 
+tf.app.flags.DEFINE_string('dense_folder', '../TEST_DATA_FOLDER/', 
                            """Root path to dense folder.""")
 # params for input
 tf.app.flags.DEFINE_integer('view_num', 5,
@@ -32,15 +33,15 @@ tf.app.flags.DEFINE_integer('default_depth_start', 1,
                             """Start depth when training.""")
 tf.app.flags.DEFINE_integer('default_depth_interval', 1, 
                             """Depth interval when training.""")
-tf.app.flags.DEFINE_integer('max_d', 192, 
+tf.app.flags.DEFINE_integer('max_d', 128, 
                             """Maximum depth step when training.""")
-tf.app.flags.DEFINE_integer('max_w', 1152, 
+tf.app.flags.DEFINE_integer('max_w', 1024, 
                             """Maximum image width when training.""")
-tf.app.flags.DEFINE_integer('max_h', 864, 
+tf.app.flags.DEFINE_integer('max_h', 768, 
                             """Maximum image height when training.""")
 tf.app.flags.DEFINE_float('sample_scale', 0.25, 
                             """Downsample scale for building cost volume (W and H).""")
-tf.app.flags.DEFINE_float('interval_scale', 0.8, 
+tf.app.flags.DEFINE_float('interval_scale', 1, 
                             """Downsample scale for building cost volume (D).""")
 tf.app.flags.DEFINE_integer('base_image_size', 32, 
                             """Base image size to fit the network.""")
@@ -49,7 +50,7 @@ tf.app.flags.DEFINE_integer('batch_size', 1,
 
 # params for config
 tf.app.flags.DEFINE_string('pretrained_model_ckpt_path', 
-                           '/data/dtu/tf_model/mvsnet_arxiv/model.ckpt',
+                           '../model/model.ckpt',
                            """Path to restore the model.""")
 tf.app.flags.DEFINE_integer('ckpt_step', 70000,
                             """ckpt step.""")
@@ -75,11 +76,11 @@ class MVSGenerator:
 
                 for view in range(min(self.view_num, selected_view_num)):
                     # image = cv2.imread(data[2 * view])
-                    image_file = file_io.FileIO(data[2 * view], mode='r')
+                    image_file = file_io.FileIO(data[2 * view], mode='rb')
                     image = scipy.misc.imread(image_file, mode='RGB')
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                     # cam = load_cam(open(data[2 * view + 1]))
-                    cam_file = file_io.FileIO(data[2 * view + 1], mode='r')
+                    cam_file = file_io.FileIO(data[2 * view + 1], mode='rb')
                     cam = load_cam(cam_file)
                     cam[1][3][1] = cam[1][3][1] * FLAGS.interval_scale
                     images.append(image)
@@ -88,11 +89,11 @@ class MVSGenerator:
                 if selected_view_num < self.view_num:
                     for view in range(selected_view_num, self.view_num):
                         # image = cv2.imread(data[0])
-                        image_file = file_io.FileIO(data[0], mode='r')
+                        image_file = file_io.FileIO(data[0], mode='rb')
                         image = scipy.misc.imread(image_file, mode='RGB')
                         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                         # cam = load_cam(open(data[1]))
-                        cam_file = file_io.FileIO(data[1], mode='r')
+                        cam_file = file_io.FileIO(data[1], mode='rb')
                         cam = load_cam(cam_file)
                         cam[1][3][1] = cam[1][3][1] * FLAGS.interval_scale
                         images.append(image)
@@ -162,7 +163,7 @@ def mvsnet_pipeline(mvs_list):
         tf.slice(scaled_cams, [0, 0, 1, 3, 1], [FLAGS.batch_size, 1, 1, 1, 1]), [FLAGS.batch_size])
 
     # depth map inference
-    init_depth_map, prob_map = inference_mem(
+    probability_volume, init_depth_map, prob_map = inference_mem(
         centered_images, scaled_cams, FLAGS.max_d, depth_start, depth_interval)
 
     # refinement 
@@ -175,6 +176,8 @@ def mvsnet_pipeline(mvs_list):
     # GPU grows incrementally
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
+    # Create a Saver object
+    prob_saver = tf.train.Saver()
 
     with tf.Session(config=config) as sess:   
 
@@ -198,8 +201,8 @@ def mvsnet_pipeline(mvs_list):
 
             start_time = time.time()
             try:
-                out_depth_map, out_init_depth_map, out_prob_map, out_images, out_cams, out_index = sess.run(
-                    [depth_map, init_depth_map, prob_map, croped_images, scaled_cams, image_index])
+                out_depth_map, out_init_depth_map, out_prob_map, out_images, out_cams, out_index, out_prob_volume = sess.run(
+                    [depth_map, init_depth_map, prob_map, croped_images, scaled_cams, image_index, probability_volume])
             except tf.errors.OutOfRangeError:
                 print("all dense finished")  # ==> "End of dataset"
                 break
@@ -207,6 +210,7 @@ def mvsnet_pipeline(mvs_list):
             print(Notify.INFO, 'depth inference %d finished. (%.3f sec/step)' % (step, duration), 
                   Notify.ENDC)
 
+            np.save(output_folder + ('/%08d_vol.np' % out_index), np.squeeze(out_prob_volume))
             # squeeze output
             out_estimated_depth_image = np.squeeze(out_depth_map)
             out_init_depth_image = np.squeeze(out_init_depth_map)
@@ -220,7 +224,9 @@ def mvsnet_pipeline(mvs_list):
             # paths
             depth_map_path = output_folder + ('/%08d.pfm' % out_index)
             init_depth_map_path = output_folder + ('/%08d_init.pfm' % out_index)
+            init_depth_image_path = output_folder + ('/%08d_init.jpg' % out_index)
             prob_map_path = output_folder + ('/%08d_prob.pfm' % out_index)
+            prob_map_image_path = output_folder + ('/%08d_prob.jpg' % out_index)
             out_ref_image_path = output_folder + ('/%08d.jpg' % out_index)
             out_ref_cam_path = output_folder + ('/%08d.txt' % out_index)
 
@@ -231,6 +237,11 @@ def mvsnet_pipeline(mvs_list):
             out_ref_image = cv2.cvtColor(out_ref_image, cv2.COLOR_RGB2BGR)
             image_file = file_io.FileIO(out_ref_image_path, mode='w')
             scipy.misc.imsave(image_file, out_ref_image)
+            prob_image_file = file_io.FileIO(prob_map_image_path, mode='w')
+            scipy.misc.imsave(prob_image_file, out_prob_map)
+            out_depth_image = cv2.normalize(out_init_depth_image, None, 0, 255, cv2.NORM_MINMAX)
+            depth_image_file = file_io.FileIO(init_depth_image_path, mode='w')
+            scipy.misc.imsave(depth_image_file, out_depth_image)
             write_cam(out_ref_cam_path, out_ref_cam)
             total_step += 1
 
@@ -240,7 +251,8 @@ def main(_):  # pylint: disable=unused-argument
     # generate input path list
     mvs_list = gen_pipeline_mvs_list(FLAGS.dense_folder)
     # mvsnet inference
-    mvsnet_pipeline(mvs_list)
+    subset_list = [mvs_list[-7], mvs_list[-6], mvs_list[-5], mvs_list[-4], mvs_list[-3]]
+    mvsnet_pipeline(mvs_list) #subset_list)
 
 
 if __name__ == '__main__':

@@ -17,7 +17,7 @@ if __name__ == '__main__':
         plt.imshow(depth_image, 'rainbow')
         plt.show()
     elif depth_path.endswith('pfm'):
-        depth_image = load_pfm(open(depth_path))
+        depth_image = load_pfm(open(depth_path, mode='r'))
         ma = np.ma.masked_equal(depth_image, 0.0, copy=False)
         print('value range: ', ma.min(), ma.max())
         plt.imshow(depth_image, 'rainbow')

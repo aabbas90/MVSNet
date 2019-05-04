@@ -13,6 +13,7 @@ import random
 import math
 import re
 import sys
+import pdb
 
 import cv2
 import numpy as np
@@ -157,7 +158,7 @@ def load_pfm(file):
     scale = None
     data_type = None
     header = str(file.readline()).rstrip()
-
+    pdb.set_trace()
     if header == 'PF':
         color = True
     elif header == 'Pf':
@@ -184,7 +185,7 @@ def load_pfm(file):
     return data
 
 def write_pfm(file, image, scale=1):
-    file = file_io.FileIO(file, mode='wb')
+    file = file_io.FileIO(file, mode='w')
     color = None
 
     if image.dtype.name != 'float32':
@@ -222,7 +223,7 @@ def gen_dtu_resized_path(dtu_data_folder, mode='training'):
     cluster_file_path = dtu_data_folder + '/Cameras/pair.txt'
     
     # cluster_list = open(cluster_file_path).read().split()
-    cluster_list = file_io.FileIO(cluster_file_path, mode='r').read().split()
+    cluster_list = file_io.FileIO(cluster_file_path, mode='rb').read().split()
 
     # 3 sets
     training_set = [2, 6, 7, 8, 14, 16, 18, 19, 20, 22, 30, 31, 36, 39, 41, 42, 44,
