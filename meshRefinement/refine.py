@@ -11,17 +11,19 @@ from refinementHelper import *
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Refine mesh generated from MVSNet.')
-    parser.add_argument('--MVSNetOutDir', default='../TEST_DATA_FOLDER/', type=str,
+    parser.add_argument('--MVSNetOutDir', default='../TEST_DATA_FOLDER_SIMULATED/', type=str,
                         help='MVSNet out path')
     parser.add_argument('--NumViews', default=1, type=int,
                         help='num neighbouring views for multi-view refinement')
     args = parser.parse_args()
     _, viewGraph = gen_pipeline_mvs_list(args.MVSNetOutDir, args.NumViews)
-    truncatedViewGraph = viewGraph[-7:-3]
+    truncatedViewGraph = viewGraph #[-7:-3]
     cameras = LoadInputs(args.MVSNetOutDir)
-    mesh = trimesh.load(args.MVSNetOutDir + "mesh.off")
-    dT = 100.0
-    numItr = 100
+    mesh = trimesh.load(args.MVSNetOutDir + "mesh5.off")
+    mesh.vertices = mesh.vertices + 2.0
+    mesh.export(args.MVSNetOutDir + "mesh5noisy.off")
+    dT = 5.0
+    numItr = 20
     for itr in range(numItr):
         for currentPair in truncatedViewGraph:
             i = currentPair[0]
@@ -42,21 +44,31 @@ if __name__ == '__main__':
             validGradM = np.stack((gradM[:,:,0].flatten()[vertexRay_i],gradM[:,:,1].flatten()[vertexRay_i],gradM[:,:,2].flatten()[vertexRay_i]), axis = 1)
             vertexDepths = cameras[i].ComputeDepth(vertexWorldCoord_i)
             vertexNormals = mesh.vertex_normals[uniqueVertices]
+#            vertexNormals = mesh.vertex_normals
             JacobianJ = GetProjectionMatrixJacobian(cameras[j], vertexWorldCoord_i)
             di = vertexWorldCoord_i - cameras[i].C
             alignedN = AlignNormals(vertexNormals, di)
             gradIjX, gradIjY = GetImageGradient(cameras[j].image)
             gradIjXValid = np.squeeze(cameras[j].GetImageAtWorldCoordsRisky(vertexWorldCoord_i, gradIjX))
             gradIjYValid = np.squeeze(cameras[j].GetImageAtWorldCoordsRisky(vertexWorldCoord_i, gradIjY))
-            term = ComputeFullSimilarityTerm(validGradM, gradIjXValid, gradIjYValid, JacobianJ, di, vertexDepths, alignedN)
+            term = ComputeFullSimilarityTermDerivative(validGradM, gradIjXValid, gradIjYValid, JacobianJ, di, vertexDepths, alignedN)
+            ccBefore = GetCorrelation(image_i, validMask_i, image_j_i, validMask_j_i)
+            print("Correlation before {}".format(np.sum(ccBefore)))
             mesh.vertices[uniqueVertices, 0:1] = mesh.vertices[uniqueVertices, 0:1] + dT * np.multiply(term, alignedN[:, 0:1])
             mesh.vertices[uniqueVertices, 1:2] = mesh.vertices[uniqueVertices, 1:2] + dT * np.multiply(term, alignedN[:, 1:2])
             mesh.vertices[uniqueVertices, 2:3] = mesh.vertices[uniqueVertices, 2:3] + dT * np.multiply(term, alignedN[:, 2:3])
-            print("Refined {} -> {} ".format(i, j))
+            mesh.vertex_normals = ComputeVertexNormals(mesh)
+            Wi, index_ray_i, index_tri_i = cameras[i].GetIntersectionWithLocation(rayInt)
+            image_i, validMask_i = cameras[i].GetImageAtWorldCoords(Wi, index_tri_i, index_ray_i, rayInt, cameras[i].image)
+            image_j_i, validMask_j_i = cameras[j].GetImageAtWorldCoords(Wi, index_tri_i, index_ray_i, rayInt, cameras[j].image)
 
+            ccAfter = GetCorrelation(image_i, validMask_i, image_j_i, validMask_j_i)
+            print("Correlation after {}".format(np.sum(ccAfter)))
+            print("Refined {} -> {} ".format(i, j))
+ 
         print("Completed {} iterations".format(itr))
 
-    mesh.export("refined.off")
+    mesh.export(args.MVSNetOutDir + "refinedConv.off")
         # absGrad = np.abs(gradM)
         # gradMImage = (absGrad - np.min(absGrad))/np.ptp(absGrad).astype(float)
         # cv2.imshow('gradM',gradMImage) 

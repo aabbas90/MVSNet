@@ -10,7 +10,7 @@ def LoadMesh(path):
     om.read_mesh(mesh, path)
     return mesh
 
-def LoadInputs(path, scaleFactor = 0.5):
+def LoadInputs(path, scaleFactor = 1.0):
     # imageList = os.listdir(path + "/depths_mvsnet/")
     imageList = os.listdir(path + "/images/")
     Cameras = []
@@ -59,7 +59,7 @@ def LoadCameraMatrices(path, scale = 1.0):
     return K, R, t, dStart, dInt
 
     
-def scale_camera(cam, scale=1):
+def scale_camera(cam, scale=1.0):
     """ resize input in order to produce sampled depth map """
     new_cam = np.copy(cam)
     # focal: 
@@ -70,7 +70,7 @@ def scale_camera(cam, scale=1):
     new_cam[1][1][2] = cam[1][1][2] * scale
     return new_cam
 
-def scale_image(image, scale=1, interpolation='linear'):
+def scale_image(image, scale=1.0, interpolation='linear'):
     """ resize image using cv2 """
     if interpolation == 'linear':
         return cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
