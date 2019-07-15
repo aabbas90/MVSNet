@@ -222,7 +222,7 @@ def gen_dtu_resized_path(dtu_data_folder, mode='training'):
     cluster_file_path = dtu_data_folder + '/Cameras/pair.txt'
     
     # cluster_list = open(cluster_file_path).read().split()
-    cluster_list = file_io.FileIO(cluster_file_path, mode='r').read().split()
+    cluster_list = file_io.FileIO(cluster_file_path, mode='rb').read().split()
 
     # 3 sets
     training_set = [2, 6, 7, 8, 14, 16, 18, 19, 20, 22, 30, 31, 36, 39, 41, 42, 44,
