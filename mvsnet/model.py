@@ -254,11 +254,11 @@ def inference_mem(images, cams, depth_num, depth_start, depth_interval, is_maste
     return estimated_depth_map, prob_map, depth_end
 
 
-def inference_refine(images, cams, ref_depth, depth_start, depth_end, depth_num, depth_interval, is_master_gpu=True):
+def inference_refine(images, cams, ref_depth, depth_start, depth_num, depth_interval, is_master_gpu=True):
     """ infer depth image from multi-view images and cameras """
 
     # dynamic gpu params
-    # depth_end = depth_start + (tf.cast(depth_num, tf.float32) - 1) * depth_interval
+    depth_end = depth_start + (tf.cast(depth_num, tf.float32) - 1) * depth_interval
     feature_c = 32
     feature_h = FLAGS.max_h / 4
     feature_w = FLAGS.max_w / 4
@@ -288,7 +288,7 @@ def inference_refine(images, cams, ref_depth, depth_start, depth_end, depth_num,
 
         for d in range(depth_num):
             # compute cost (standard deviation feature)
-            current_depth = ref_depth + tf.cast(d, tf.float32) * depth_interval - tf.cast(depth_start, tf.float32) 
+            current_depth = ref_depth + tf.cast(d, tf.float32) * depth_interval + tf.cast(depth_start, tf.float32) 
             ave_feature = tf.Variable(tf.zeros(
                 [FLAGS.batch_size, feature_h, feature_w, feature_c]),
                 name='ave', trainable=False, collections=[tf.GraphKeys.LOCAL_VARIABLES])

@@ -234,7 +234,8 @@ def mvsnet_pipeline(mvs_list):
             
             ref_img = np.squeeze(out_images[0,0,:,:,:]).swapaxes(0, 2).swapaxes(1, 2)
             ref_depth = cv2.resize(np.squeeze(out_depth_map), (ref_img.shape[2],ref_img.shape[1]))
-            ultra_refine_depth_map = inference_refine(centered_images_tf, real_cams_tf, tf.convert_to_tensor(ref_depth), depth_start_tf, depth_end_tf, FLAGS.max_d, depth_interval_tf)
+            ref_depth = ref_depth - tf.reduce_mean(ref_depth)
+            ultra_refine_depth_map = inference_refine(centered_images_tf, real_cams_tf, tf.convert_to_tensor(ref_depth), depth_start_tf, FLAGS.max_d, depth_interval_tf)
             out_ultra_refine_depth_map = sess.run([ultra_refine_depth_map])
             out_ultra_refine_depth_map = cv2.resize(np.squeeze(out_ultra_refine_depth_map[0][0]), (ref_img.shape[2],ref_img.shape[1]))
 
