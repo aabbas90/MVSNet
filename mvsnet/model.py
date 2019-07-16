@@ -161,16 +161,16 @@ def inference_mem(images, cams, depth_num, depth_start, depth_interval, is_maste
 
     # image feature extraction    
     if is_master_gpu:
-        ref_tower = UniNetDS2({'data': ref_image}, is_training=True, reuse=False)
+        ref_tower = UniNetDS2({'data': ref_image}, is_training=True, reuse=tf.AUTO_REUSE)
     else:
-        ref_tower = UniNetDS2({'data': ref_image}, is_training=True, reuse=True)
+        ref_tower = UniNetDS2({'data': ref_image}, is_training=True, reuse=tf.AUTO_REUSE)
     ref_feature = ref_tower.get_output()
     ref_feature2 = tf.square(ref_feature)
 
     view_features = []
     for view in range(1, FLAGS.view_num):
         view_image = tf.squeeze(tf.slice(images, [0, view, 0, 0, 0], [-1, 1, -1, -1, -1]), axis=1)
-        view_tower = UniNetDS2({'data': view_image}, is_training=True, reuse=True)
+        view_tower = UniNetDS2({'data': view_image}, is_training=True, reuse=tf.AUTO_REUSE)
         view_features.append(view_tower.get_output())
     view_features = tf.stack(view_features, axis=0)
 
@@ -219,10 +219,11 @@ def inference_mem(images, cams, depth_num, depth_start, depth_interval, is_maste
         cost_volume = tf.stack(depth_costs, axis=1)
 
     # filtered cost volume, size of (B, D, H, W, 1)
+    print(cost_volume)
     if is_master_gpu:
-        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=False)
+        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=tf.AUTO_REUSE)
     else:
-        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=True)
+        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=tf.AUTO_REUSE)
     filtered_cost_volume = tf.squeeze(filtered_cost_volume_tower.get_output(), axis=-1)
 
     # depth map by softArgmin
@@ -250,7 +251,7 @@ def inference_mem(images, cams, depth_num, depth_start, depth_interval, is_maste
     # filtered_depth_map = tf.cast(tf.greater_equal(prob_map, 0.8), dtype='float32') * estimated_depth_map
 
     # return filtered_depth_map, prob_map
-    return estimated_depth_map, prob_map
+    return estimated_depth_map, prob_map, depth_end
 
 
 def inference_refine(images, cams, ref_depth, depth_start, depth_end, depth_num, depth_interval, is_master_gpu=True):
@@ -268,9 +269,9 @@ def inference_refine(images, cams, ref_depth, depth_start, depth_end, depth_num,
 
     # image feature extraction    
     if is_master_gpu:
-        ref_tower = UniNetDS2({'data': ref_image}, is_training=True, reuse=False)
+        ref_tower = UniNetDS2({'data': ref_image}, is_training=True, reuse=tf.AUTO_REUSE)
     else:
-        ref_tower = UniNetDS2({'data': ref_image}, is_training=True, reuse=True)
+        ref_tower = UniNetDS2({'data': ref_image}, is_training=True, reuse=tf.AUTO_REUSE)
     ref_feature = ref_tower.get_output()
     ref_feature2 = tf.square(ref_feature)
 
@@ -301,7 +302,7 @@ def inference_refine(images, cams, ref_depth, depth_start, depth_end, depth_num,
             def body(view, ave_feature, ave_feature2):
                 """Loop body."""
                 view_image = tf.slice(view_images_projected, [view, 0, 0, 0], [1, -1, -1, -1])
-                view_tower = UniNetDS2({'data': view_image}, is_training=True, reuse=True)
+                view_tower = UniNetDS2({'data': view_image}, is_training=True, reuse=tf.AUTO_REUSE)
                 view_tower_out = view_tower.get_output()
                 ave_feature = tf.assign_add(ave_feature, view_tower_out)
                 ave_feature2 = tf.assign_add(ave_feature2, tf.square(view_tower_out))
@@ -319,11 +320,13 @@ def inference_refine(images, cams, ref_depth, depth_start, depth_end, depth_num,
         cost_volume = tf.stack(depth_costs, axis=1)
 
     # filtered cost volume, size of (B, D, H, W, 1)
+    print(cost_volume)
     if is_master_gpu:
-        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=False)
+        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=tf.AUTO_REUSE)
     else:
-        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=True)
+        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=tf.AUTO_REUSE)
     filtered_cost_volume = tf.squeeze(filtered_cost_volume_tower.get_output(), axis=-1)
+    print(filtered_cost_volume)
 
     # depth map by softArgmin
     with tf.name_scope('soft_arg_min'):
@@ -333,6 +336,7 @@ def inference_refine(images, cams, ref_depth, depth_start, depth_end, depth_num,
 
         # depth image by soft argmin
         volume_shape = tf.shape(probability_volume)
+        print(probability_volume)
         soft_2d = []
         for i in range(FLAGS.batch_size):
             ds = depth_start[i]
@@ -368,7 +372,7 @@ def GetProjectedImagesTF(centered_images, real_cams, ref_depth):
         K_n = tf.squeeze(real_cams[0, c, 1, :3, :3])
         W = PixelCoordToWorldCoord(K_ref, R_ref, t_ref, xv, yv, ref_depth)
         xp, yp = WorldCoordTopixelCoord(K_n, R_n, t_n, W)
-        projected_img = GetImageAtPixelCoordinates(n_img, xp, yp).swapaxes(0, 2).swapaxes(0, 1)
+        projected_img = tf.transpose(GetImageAtPixelCoordinates(n_img, xp, yp), perm = [1, 2, 0])
         projected_images.append(projected_img)
     return tf.stack(projected_images, axis = 0)
 
@@ -494,10 +498,10 @@ def depth_refine(init_depth_map, image, depth_num, depth_start, depth_interval, 
     # refinement network
     if is_master_gpu:
         norm_depth_tower = RefineNet({'color_image': resized_image, 'depth_image': init_norm_depth_map},
-                                        is_training=True, reuse=False)
+                                        is_training=True, reuse=tf.AUTO_REUSE)
     else:
         norm_depth_tower = RefineNet({'color_image': resized_image, 'depth_image': init_norm_depth_map},
-                                        is_training=True, reuse=True)
+                                        is_training=True, reuse=tf.AUTO_REUSE)
     norm_depth_map = norm_depth_tower.get_output()
 
     # denormalize depth map

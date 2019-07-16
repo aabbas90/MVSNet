@@ -39,11 +39,11 @@ tf.app.flags.DEFINE_integer('default_depth_start', 1,
                             """Start depth when training.""")
 tf.app.flags.DEFINE_integer('default_depth_interval', 1, 
                             """Depth interval when training.""")
-tf.app.flags.DEFINE_integer('max_d', 128, 
+tf.app.flags.DEFINE_integer('max_d', 32, 
                             """Maximum depth step when training.""")
-tf.app.flags.DEFINE_integer('max_w', 768, 
+tf.app.flags.DEFINE_integer('max_w', 1024, 
                             """Maximum image width when training.""")
-tf.app.flags.DEFINE_integer('max_h', 512, 
+tf.app.flags.DEFINE_integer('max_h', 768, 
                             """Maximum image height when training.""")
 tf.app.flags.DEFINE_float('sample_scale', 0.25, 
                             """Downsample scale for building cost volume (W and H).""")
@@ -191,14 +191,13 @@ def mvsnet_pipeline(mvs_list):
         scaled_cams_tf = tf.convert_to_tensor(scaled_cams)
         depth_start_tf = tf.convert_to_tensor(depth_start)
         depth_interval_tf = tf.convert_to_tensor(depth_interval)
-        init_depth_map, prob_map = inference_mem(
+        init_depth_map, prob_map, depth_end = inference_mem(
             centered_images_tf, scaled_cams_tf, FLAGS.max_d, depth_start_tf, depth_interval_tf)
 
         # refinement 
         ref_image = tf.squeeze(tf.slice(tf.convert_to_tensor(centered_images), [0, 0, 0, 0, 0], [-1, 1, -1, -1, 3]), axis=1)
         depth_map = depth_refine(init_depth_map, ref_image, FLAGS.max_d, depth_start_tf, depth_interval_tf)
         real_cams_tf = tf.convert_to_tensor(real_cams)
-        ultra_refine_depth_map = inference_refine(centered_images_tf, real_cams_tf, depth_map, -10.0, 10.0, 20, 1.0)
 
         # init option
         init_op = tf.global_variables_initializer()
@@ -224,8 +223,8 @@ def mvsnet_pipeline(mvs_list):
             # run inference for each reference view
             start_time = time.time()
             try:
-                out_depth_map, out_init_depth_map, out_prob_map, out_images, out_cams, out_ultra_refine_depth_map = sess.run(
-                    [depth_map, init_depth_map, prob_map, centered_images_tf, scaled_cams_tf, ultra_refine_depth_map])
+                out_depth_map, out_init_depth_map, out_prob_map, out_images, out_cams, out_depth_end = sess.run(
+                    [depth_map, init_depth_map, prob_map, centered_images_tf, scaled_cams_tf, depth_end])
             except tf.errors.OutOfRangeError:
                 print("all dense finished")  # ==> "End of dataset"
                 break
@@ -235,13 +234,18 @@ def mvsnet_pipeline(mvs_list):
             
             ref_img = np.squeeze(out_images[0,0,:,:,:]).swapaxes(0, 2).swapaxes(1, 2)
             ref_depth = cv2.resize(np.squeeze(out_depth_map), (ref_img.shape[2],ref_img.shape[1]))
+            ultra_refine_depth_map = inference_refine(centered_images_tf, real_cams_tf, tf.convert_to_tensor(ref_depth), depth_start_tf, depth_end_tf, FLAGS.max_d, depth_interval_tf)
+            out_ultra_refine_depth_map = sess.run([ultra_refine_depth_map])
+            out_ultra_refine_depth_map = cv2.resize(np.squeeze(out_ultra_refine_depth_map[0][0]), (ref_img.shape[2],ref_img.shape[1]))
+
+            pdb.set_trace()
             # projected_images = GetProjectedImages(centered_images, real_cams, ref_depth)
             # projected_images = GetProjectedImagesTF(tf.convert_to_tensor(centered_images), tf.convert_to_tensor(real_cams), tf.convert_to_tensor(ref_depth))
 
             fig, ax0 = plt.subplots(nrows=1, ncols=3)
             ax0[0].imshow(np.swapaxes(ref_img, 0, 2).swapaxes(0, 1))
             ax0[1].imshow(ref_depth)
-            ax0[2].imshow(out_ultra_refine_depth_map)
+            ax0[2].imshow(out_ultra_refine_depth_map + ref_depth)
             multi = MultiCursor(fig.canvas, (ax0[0], ax0[1], ax0[2]), color='r', lw=1, horizOn=True, vertOn=True)
             plt.show()
             plt.tight_layout()
