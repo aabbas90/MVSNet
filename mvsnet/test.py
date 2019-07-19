@@ -28,22 +28,24 @@ from mvsnet import *
 from homography_warping import repeat_int
 from graphicsHelper import *
 import pdb
+from tensorflow.python import debug as tf_debug
+
 
 # params for datasets
 tf.app.flags.DEFINE_string('dense_folder', '../TEST_DATA_FOLDER/', 
                            """Root path to dense folder.""")
 # params for input
-tf.app.flags.DEFINE_integer('view_num', 2,
+tf.app.flags.DEFINE_integer('view_num', 3,
                             """Number of images (1 ref image and view_num - 1 view images).""")
 tf.app.flags.DEFINE_integer('default_depth_start', 1,
                             """Start depth when training.""")
 tf.app.flags.DEFINE_integer('default_depth_interval', 1, 
                             """Depth interval when training.""")
-tf.app.flags.DEFINE_integer('max_d', 32, 
+tf.app.flags.DEFINE_integer('max_d', 128, 
                             """Maximum depth step when training.""")
-tf.app.flags.DEFINE_integer('max_w', 1024, 
+tf.app.flags.DEFINE_integer('max_w', 768, 
                             """Maximum image width when training.""")
-tf.app.flags.DEFINE_integer('max_h', 768, 
+tf.app.flags.DEFINE_integer('max_h', 576, 
                             """Maximum image height when training.""")
 tf.app.flags.DEFINE_float('sample_scale', 0.25, 
                             """Downsample scale for building cost volume (W and H).""")
@@ -197,7 +199,6 @@ def mvsnet_pipeline(mvs_list):
         # refinement 
         ref_image = tf.squeeze(tf.slice(tf.convert_to_tensor(centered_images), [0, 0, 0, 0, 0], [-1, 1, -1, -1, 3]), axis=1)
         depth_map = depth_refine(init_depth_map, ref_image, FLAGS.max_d, depth_start_tf, depth_interval_tf)
-        real_cams_tf = tf.convert_to_tensor(real_cams)
 
         # init option
         init_op = tf.global_variables_initializer()
@@ -223,8 +224,7 @@ def mvsnet_pipeline(mvs_list):
             # run inference for each reference view
             start_time = time.time()
             try:
-                out_depth_map, out_init_depth_map, out_prob_map, out_images, out_cams, out_depth_end = sess.run(
-                    [depth_map, init_depth_map, prob_map, centered_images_tf, scaled_cams_tf, depth_end])
+                out_depth_map, out_depth_end = sess.run([depth_map, depth_end])
             except tf.errors.OutOfRangeError:
                 print("all dense finished")  # ==> "End of dataset"
                 break
@@ -232,24 +232,53 @@ def mvsnet_pipeline(mvs_list):
             print(Notify.INFO, 'depth inference %s finished. (%.3f sec/step)' % (data, duration), 
                     Notify.ENDC)
             
-            ref_img = np.squeeze(out_images[0,0,:,:,:]).swapaxes(0, 2).swapaxes(1, 2)
+            ref_img = np.squeeze(centered_images[0,0,:,:,:]).swapaxes(0, 2).swapaxes(1, 2)
             ref_depth = cv2.resize(np.squeeze(out_depth_map), (ref_img.shape[2],ref_img.shape[1]))
-            ref_depth = ref_depth - tf.reduce_mean(ref_depth)
-            ultra_refine_depth_map = inference_refine(centered_images_tf, real_cams_tf, tf.convert_to_tensor(ref_depth), depth_start_tf, FLAGS.max_d, depth_interval_tf)
-            out_ultra_refine_depth_map = sess.run([ultra_refine_depth_map])
-            out_ultra_refine_depth_map = cv2.resize(np.squeeze(out_ultra_refine_depth_map[0][0]), (ref_img.shape[2],ref_img.shape[1]))
+            ref_depth[ref_depth > out_depth_end] = out_depth_end
+            ref_depth_m = ref_depth - np.min(ref_depth)
+            
+            # Compute ref features:
+            centered_images_ph = tf.placeholder(tf.float32)
+            real_cams_ph = tf.placeholder(tf.float32)
+            ref_features, ref_features2 = compute_ref_features(centered_images_ph, real_cams_ph)
+            out_ref_features, out_ref_features2 = sess.run([ref_features, ref_features2], feed_dict = {centered_images_ph : centered_images, real_cams_ph : real_cams})
 
-            pdb.set_trace()
-            # projected_images = GetProjectedImages(centered_images, real_cams, ref_depth)
-            # projected_images = GetProjectedImagesTF(tf.convert_to_tensor(centered_images), tf.convert_to_tensor(real_cams), tf.convert_to_tensor(ref_depth))
+            # loop over depths:
+            depth_costs = []
+            current_depth_ph = tf.placeholder(tf.float32)
+            ref_feature_ph = tf.placeholder(tf.float32)
+            ref_feature2_ph = tf.placeholder(tf.float32)
+            for d in range(FLAGS.max_d):
+                depth_offset = d * depth_interval + depth_start
+                current_depth = ref_depth_m + depth_offset
+                print("Computing for depth: {}".format(depth_offset)) 
+                current_cost, view_images_projected = compute_cost_volume(centered_images_ph, real_cams_ph, current_depth_ph, ref_feature_ph, ref_feature2_ph)
+                [out_current_cost, out_view_images_projected] = sess.run([current_cost, view_images_projected],
+                                                            feed_dict = {centered_images_ph : centered_images,
+                                                                         real_cams_ph : real_cams, 
+                                                                         current_depth_ph : current_depth,
+                                                                         ref_feature_ph : out_ref_features,
+                                                                         ref_feature2_ph : out_ref_features2})
+                depth_costs.append(out_current_cost)
+                # plt.imshow(np.squeeze(out_current_cost[0,:,:,:3]))
+                # plt.show()
+
+            depth_costs = tf.stack(depth_costs, axis = 1)
+            ultra_refine_depth_map, ultra_refine_prob_map, prob_vol = get_depth_from_cost_volume(depth_costs, depth_start, depth_interval, out_depth_end)
+            out_ultra_refine_depth_map, out_ultra_refine_prob_map, out_prob_vol = sess.run([ultra_refine_depth_map, ultra_refine_prob_map, prob_vol])
+            # pdb.set_trace()
+
+            out_ultra_refine_depth_map = cv2.resize(np.squeeze(out_ultra_refine_depth_map), (ref_img.shape[2],ref_img.shape[1])) + ref_depth_m
+            # out_ultra_refine_depth_map[out_ultra_refine_depth_map > out_depth_end] = out_depth_end
 
             fig, ax0 = plt.subplots(nrows=1, ncols=3)
             ax0[0].imshow(np.swapaxes(ref_img, 0, 2).swapaxes(0, 1))
             ax0[1].imshow(ref_depth)
-            ax0[2].imshow(out_ultra_refine_depth_map + ref_depth)
+            ax0[2].imshow(out_ultra_refine_depth_map)
             multi = MultiCursor(fig.canvas, (ax0[0], ax0[1], ax0[2]), color='r', lw=1, horizOn=True, vertOn=True)
             plt.show()
             plt.tight_layout()
+            pdb.set_trace()
 
 def main(_):  # pylint: disable=unused-argument
     """ program entrance """

@@ -253,6 +253,93 @@ def inference_mem(images, cams, depth_num, depth_start, depth_interval, is_maste
     # return filtered_depth_map, prob_map
     return estimated_depth_map, prob_map, depth_end
 
+def compute_ref_features(images, cams, is_master_gpu=True):
+    # reference image
+    ref_image = tf.squeeze(tf.slice(images, [0, 0, 0, 0, 0], [-1, 1, -1, -1, 3]), axis=1)
+    ref_cam = tf.squeeze(tf.slice(cams, [0, 0, 0, 0, 0], [-1, 1, 2, 4, 4]), axis=1)
+
+    # image feature extraction    
+    if is_master_gpu:
+        ref_tower = UniNetDS2({'data': ref_image}, is_training=True, reuse=True)
+    else:
+        ref_tower = UniNetDS2({'data': ref_image}, is_training=True, reuse=True)
+    ref_feature = ref_tower.get_output()
+    ref_feature2 = tf.square(ref_feature)
+    return ref_feature, ref_feature2
+
+def compute_cost_volume(images, cams, current_depth, ref_feature, ref_feature2, is_master_gpu=True):
+    feature_c = 32
+    feature_h = FLAGS.max_h / 4
+    feature_w = FLAGS.max_w / 4
+
+    x = tf.linspace(0.5, tf.cast(FLAGS.max_w, 'float32') - 0.5, FLAGS.max_w)
+    y = tf.linspace(0.5, tf.cast(FLAGS.max_h, 'float32') - 0.5, FLAGS.max_h)
+    xv, yv = tf.meshgrid(x, y)
+
+    # build cost volume by differentialble homography
+    with tf.name_scope('cost_volume_homography'):
+
+        # compute cost (standard deviation feature)
+        ave_feature = tf.Variable(tf.zeros(
+            [FLAGS.batch_size, feature_h, feature_w, feature_c]),
+            name='ave', trainable=False, collections=[tf.GraphKeys.LOCAL_VARIABLES])
+        ave_feature2 = tf.Variable(tf.zeros(
+            [FLAGS.batch_size, feature_h, feature_w, feature_c]),
+            name='ave2', trainable=False, collections=[tf.GraphKeys.LOCAL_VARIABLES])
+        ave_feature = tf.assign(ave_feature, ref_feature)
+        ave_feature2 = tf.assign(ave_feature2, ref_feature2)
+        view_images_projected = GetProjectedImagesTF(images, cams, current_depth, xv, yv)
+
+        def body(view, ave_feature, ave_feature2):
+            """Loop body."""
+            view_image = tf.gather(view_images_projected, view) # tf.slice(view_images_projected, [view, 0, 0, 0], [1, -1, -1, -1])
+            view_tower = UniNetDS2({'data': view_image}, is_training=True, reuse=True)
+            view_tower_out = view_tower.get_output()
+            ave_feature = tf.assign_add(ave_feature, view_tower_out)
+            ave_feature2 = tf.assign_add(ave_feature2, tf.square(view_tower_out))
+            view = tf.add(view, 1)
+            return view, ave_feature, ave_feature2
+
+        view = tf.constant(0)
+        cond = lambda view, *_: tf.less(view, FLAGS.view_num - 1)
+        _, ave_feature, ave_feature2 = tf.while_loop(
+            cond, body, [view, ave_feature, ave_feature2], back_prop=False, parallel_iterations=1)
+
+        ave_feature = tf.assign(ave_feature, tf.square(ave_feature) / (FLAGS.view_num * FLAGS.view_num))
+        ave_feature2 = tf.assign(ave_feature2, ave_feature2 / FLAGS.view_num - ave_feature)
+        return ave_feature2, view_images_projected # depth_cost
+    
+    # cost_volume = tf.stack(depth_costs, axis=1)
+
+def get_depth_from_cost_volume(cost_volume, depth_start, depth_interval, depth_end, is_master_gpu = True):
+    if is_master_gpu:
+        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=True)
+    else:
+        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=True)
+    filtered_cost_volume = tf.squeeze(filtered_cost_volume_tower.get_output(), axis=-1)
+
+    # depth map by softArgmin
+    with tf.name_scope('soft_arg_min'):
+        # probability volume by soft max
+        probability_volume = tf.nn.softmax(tf.scalar_mul(-1, filtered_cost_volume),
+                                           axis=1, name='prob_volume')
+
+        # depth image by soft argmin
+        volume_shape = tf.shape(probability_volume)
+        soft_2d = []
+        for i in range(FLAGS.batch_size):
+            soft_1d = tf.linspace(depth_start[i], depth_end[i], tf.cast(FLAGS.max_d, tf.int32))
+            soft_2d.append(soft_1d)
+        soft_2d = tf.reshape(tf.stack(soft_2d, axis=0), [volume_shape[0], volume_shape[1], 1, 1])
+        soft_4d = tf.tile(soft_2d, [1, 1, volume_shape[2], volume_shape[3]])
+        print(soft_4d)
+        estimated_depth_map = tf.reduce_sum(soft_4d * probability_volume, axis=1)
+        estimated_depth_map = tf.expand_dims(estimated_depth_map, axis=3)
+
+    # probability map
+    prob_map = get_propability_map(probability_volume, estimated_depth_map, depth_start, depth_interval)
+
+    return estimated_depth_map, prob_map, probability_volume
 
 def inference_refine(images, cams, ref_depth, depth_start, depth_num, depth_interval, is_master_gpu=True):
     """ infer depth image from multi-view images and cameras """
@@ -281,6 +368,9 @@ def inference_refine(images, cams, ref_depth, depth_start, depth_num, depth_inte
     #     view_tower = UniNetDS2({'data': view_image}, is_training=True, reuse=True)
     #     view_features.append(view_tower.get_output())
     # view_features = tf.stack(view_features, axis=0)
+    x = tf.constant(tf.linspace(0.5, tf.cast(FLAGS.max_w, 'float32') - 0.5, FLAGS.max_w))
+    y = tf.constant(tf.linspace(0.5, tf.cast(FLAGS.max_h, 'float32') - 0.5, FLAGS.max_h))
+    xv, yv = tf.meshgrid(x, y)
 
     # build cost volume by differentialble homography
     with tf.name_scope('cost_volume_homography'):
@@ -297,11 +387,11 @@ def inference_refine(images, cams, ref_depth, depth_start, depth_num, depth_inte
                 name='ave2', trainable=False, collections=[tf.GraphKeys.LOCAL_VARIABLES])
             ave_feature = tf.assign(ave_feature, ref_feature)
             ave_feature2 = tf.assign(ave_feature2, ref_feature2)
-            view_images_projected = GetProjectedImagesTF(images, cams, current_depth)
+            view_images_projected = GetProjectedImagesTF(images, cams, current_depth, xv, yv)
 
             def body(view, ave_feature, ave_feature2):
                 """Loop body."""
-                view_image = tf.slice(view_images_projected, [view, 0, 0, 0], [1, -1, -1, -1])
+                view_image = tf.gather(view_images_projected, view) # tf.slice(view_images_projected, [view, 0, 0, 0], [1, -1, -1, -1])
                 view_tower = UniNetDS2({'data': view_image}, is_training=True, reuse=tf.AUTO_REUSE)
                 view_tower_out = view_tower.get_output()
                 ave_feature = tf.assign_add(ave_feature, view_tower_out)
@@ -339,42 +429,41 @@ def inference_refine(images, cams, ref_depth, depth_start, depth_num, depth_inte
         print(probability_volume)
         soft_2d = []
         for i in range(FLAGS.batch_size):
-            ds = depth_start[i]
-            de = depth_end[i]
-            soft_1d = tf.linspace(ds, de, tf.cast(depth_num, tf.int32))
+            soft_1d = tf.linspace(depth_start[i], depth_end[i], tf.cast(depth_num, tf.int32))
             soft_2d.append(soft_1d)
         soft_2d = tf.reshape(tf.stack(soft_2d, axis=0), [volume_shape[0], volume_shape[1], 1, 1])
         soft_4d = tf.tile(soft_2d, [1, 1, volume_shape[2], volume_shape[3]])
+        print(soft_4d)
         estimated_depth_map = tf.reduce_sum(soft_4d * probability_volume, axis=1)
         estimated_depth_map = tf.expand_dims(estimated_depth_map, axis=3)
+        print(soft_4d)
 
     # probability map
-    prob_map = get_propability_map(probability_volume, estimated_depth_map, depth_start, depth_interval)
+    # prob_map = get_propability_map(probability_volume, estimated_depth_map, depth_start, depth_interval)
 
     # filtered_depth_map = tf.cast(tf.greater_equal(prob_map, 0.8), dtype='float32') * estimated_depth_map
 
     # return filtered_depth_map, prob_map
-    return estimated_depth_map, prob_map
+    return estimated_depth_map #, prob_map
 
-def GetProjectedImagesTF(centered_images, real_cams, ref_depth):
-    ref_img = tf.transpose(tf.squeeze(centered_images[0,0,:,:,:]), perm = [2, 0, 1])
-    x = tf.linspace(0.5, tf.cast(tf.shape(ref_img)[2], 'float32') - 0.5, tf.shape(ref_img)[2])   
-    y = tf.linspace(0.5, tf.cast(tf.shape(ref_img)[1], 'float32') - 0.5, tf.shape(ref_img)[1])   
-    xv, yv = tf.meshgrid(x, y)
+def GetProjectedImagesTF(centered_images, real_cams, ref_depth, xv, yv):
+    # ref_image = tf.get_variable("ref_image")
+    # ref_img = tf.transpose(tf.squeeze(centered_images[0,0,:,:,:]), perm = [2, 0, 1])
     R_ref = tf.squeeze(real_cams[0, 0, 0, :3, :3])
     t_ref = real_cams[0, 0, 0, :3, 3:4]
     K_ref = tf.squeeze(real_cams[0, 0, 1, :3, :3])
-    projected_images = []
-    for c in range(1, centered_images.shape[1]):
-        n_img = tf.transpose(tf.squeeze(centered_images[0, c, :, :, :]), perm = [2, 0, 1])
+    projected_images = [] #tf.get_variable("projected_images", shape = [centered_images.shape[0] - 1, centered_images.shape[1:]])
+    for c in range(1, FLAGS.view_num):
+        # n_img = tf.transpose(tf.squeeze(centered_images[0, c, :, :, :]), perm = [2, 0, 1])
         R_n = tf.squeeze(real_cams[0, c, 0, :3, :3])
         t_n = real_cams[0, c, 0, :3, 3:4]
         K_n = tf.squeeze(real_cams[0, c, 1, :3, :3])
         W = PixelCoordToWorldCoord(K_ref, R_ref, t_ref, xv, yv, ref_depth)
         xp, yp = WorldCoordTopixelCoord(K_n, R_n, t_n, W)
-        projected_img = tf.transpose(GetImageAtPixelCoordinates(n_img, xp, yp), perm = [1, 2, 0])
+        projected_img = tf.expand_dims(tf.transpose(GetImageAtPixelCoordinates(tf.transpose(tf.squeeze(centered_images[0, c, :, :, :]), perm = [2, 0, 1]), xp, yp), perm = [1, 2, 0]), axis = 0)
+        projected_img.set_shape([1, FLAGS.max_h, FLAGS.max_w, 3])
         projected_images.append(projected_img)
-    return tf.stack(projected_images, axis = 0)
+    return projected_images #tf.stack(projected_images, axis = 0)
 
 def PixelCoordToWorldCoord(K, R, t, u, v, depth):
     a = tf.multiply(K[2,0], u) - K[0,0]
