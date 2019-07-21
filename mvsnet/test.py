@@ -265,7 +265,7 @@ def mvsnet_pipeline(mvs_list):
 
             depth_costs = tf.stack(depth_costs, axis = 1)
             ultra_refine_depth_map, ultra_refine_prob_map, prob_vol = get_depth_from_cost_volume(depth_costs, depth_start, depth_interval, out_depth_end)
-            out_ultra_refine_depth_map, out_ultra_refine_prob_map, out_prob_vol = sess.run([ultra_refine_depth_map, ultra_refine_prob_map, prob_vol])
+            out_ultra_refine_depth_map, out_ultra_refine_prob_map = sess.run([ultra_refine_depth_map, ultra_refine_prob_map])
             # pdb.set_trace()
 
             out_ultra_refine_depth_map = cv2.resize(np.squeeze(out_ultra_refine_depth_map), (ref_img.shape[2],ref_img.shape[1])) + ref_depth_m
