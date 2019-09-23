@@ -311,7 +311,7 @@ def compute_cost_volume(images, cams, current_depth, ref_feature, ref_feature2, 
     
     # cost_volume = tf.stack(depth_costs, axis=1)
 
-def get_depth_from_cost_volume(cost_volume, depth_start, depth_interval, depth_end, is_master_gpu = True):
+def get_depth_from_cost_volume(cost_volume, depth_start, depth_interval, depth_end, num_depths, is_master_gpu = True):
     if is_master_gpu:
         filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=True)
     else:
@@ -328,7 +328,7 @@ def get_depth_from_cost_volume(cost_volume, depth_start, depth_interval, depth_e
         volume_shape = tf.shape(probability_volume)
         soft_2d = []
         for i in range(FLAGS.batch_size):
-            soft_1d = tf.linspace(depth_start[i], depth_end[i], tf.cast(FLAGS.max_d, tf.int32))
+            soft_1d = tf.linspace(depth_start[i], depth_end[i], tf.cast(num_depths, tf.int32))
             soft_2d.append(soft_1d)
         soft_2d = tf.reshape(tf.stack(soft_2d, axis=0), [volume_shape[0], volume_shape[1], 1, 1])
         soft_4d = tf.tile(soft_2d, [1, 1, volume_shape[2], volume_shape[3]])
