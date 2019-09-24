@@ -120,9 +120,9 @@ def inference(images, cams, depth_num, depth_start, depth_interval, is_master_gp
 
     # filtered cost volume, size of (B, D, H, W, 1)
     if is_master_gpu:
-        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=False)
+        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=tf.AUTO_REUSE)
     else:
-        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=True)
+        filtered_cost_volume_tower = RegNetUS0({'data': cost_volume}, is_training=True, reuse=tf.AUTO_REUSE)
     filtered_cost_volume = tf.squeeze(filtered_cost_volume_tower.get_output(), axis=-1)
 
     # depth map by softArgmin
@@ -332,7 +332,6 @@ def get_depth_from_cost_volume(cost_volume, depth_start, depth_interval, depth_e
             soft_2d.append(soft_1d)
         soft_2d = tf.reshape(tf.stack(soft_2d, axis=0), [volume_shape[0], volume_shape[1], 1, 1])
         soft_4d = tf.tile(soft_2d, [1, 1, volume_shape[2], volume_shape[3]])
-        print(soft_4d)
         estimated_depth_map = tf.reduce_sum(soft_4d * probability_volume, axis=1)
         estimated_depth_map = tf.expand_dims(estimated_depth_map, axis=3)
 
